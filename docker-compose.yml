@@ -1,0 +1,13 @@
+services:
+  book-converter:
+    build: .
+    image: book-converter:latest
+    ports:
+      - "5000:5000"
+    environment:
+      # Optional — you can also paste the key into the web form.
+      MISTRAL_API_KEY: ${MISTRAL_API_KEY:-}
+    volumes:
+      # OCR page cache — persists across container rebuilds/restarts.
+      - ./cache:/app/cache
+    restart: unless-stopped

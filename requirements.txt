@@ -1,0 +1,6 @@
+flask>=3.0
+requests>=2.31
+pillow>=10.0
+markdown>=3.5
+matplotlib>=3.8    # renders LaTeX formulas as vector SVGs for the PDF output
+weasyprint>=62     # HTML -> PDF (needs system Pango; see the Dockerfile)

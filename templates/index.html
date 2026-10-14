@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Book Converter — DJVU to Ebook (Mistral OCR)</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; margin: 0; padding: 2rem 1rem; display: flex; justify-content: center; }
+  main { width: 100%; max-width: 620px; }
+  h1 { font-size: 1.5rem; margin-bottom: .25rem; }
+  .card { border: 1px solid #8884; border-radius: 12px; padding: 1.25rem; margin-top: 1rem; }
+  label { display: block; font-size: .85rem; margin: .75rem 0 .25rem; font-weight: 600; }
+  input[type=file], input[type=password], select { width: 100%; padding: .5rem; border: 1px solid #8888; border-radius: 8px; background: transparent; color: inherit; font: inherit; }
+  button { margin-top: 1rem; padding: .6rem 1.2rem; border: 0; border-radius: 8px; background: #4f46e5; color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  button.secondary { background: transparent; color: inherit; border: 1px solid #8888; }
+  .row { display: flex; gap: 1rem; }
+  .row > div { flex: 1; }
+  #progress { margin-top: 1rem; display: none; }
+  .bar { height: 8px; border-radius: 4px; background: #8883; overflow: hidden; margin-top: .5rem; }
+  .bar > div { height: 100%; width: 0%; background: #4f46e5; transition: width .3s; }
+  #status { font-size: .9rem; margin-top: .75rem; }
+  #result { display: none; margin-top: 1rem; }
+  #result-summary { font-weight: 600; }
+  #preview { width: 100%; min-height: 180px; margin-top: .5rem; font-family: ui-monospace, monospace; font-size: .8rem; padding: .5rem; border: 1px solid #8888; border-radius: 8px; background: transparent; color: inherit; }
+  .links { display: flex; flex-wrap: wrap; gap: .75rem; margin: .75rem 0; align-items: center; }
+  .links a { padding: .5rem 1rem; border-radius: 8px; border: 1px solid #4f46e5; color: #4f46e5; text-decoration: none; font-weight: 600; }
+  #error { display: none; margin-top: 1rem; padding: .75rem; border-radius: 8px; background: #dc26261a; border: 1px solid #dc2626; color: #dc2626; }
+  .hint { font-size: .8rem; opacity: .7; margin-top: .25rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Book Converter</h1>
+  <p>DJVU &rarr; ebook, powered by Mistral OCR. Upload a scanned book and get back an EPUB, a Kindle-ready MOBI and a print-ready PDF (math formulas rendered as vector graphics), plus Markdown and plain text.</p>
+
+  <div class="card">
+    <form id="form">
+      <label for="file">DJVU file</label>
+      <input type="file" id="file" name="file" accept=".djvu" required>
+
+      <div class="row">
+        <div>
+          <label for="dpi">Page resolution</label>
+          <select id="dpi" name="dpi">
+            <option value="150">150 DPI (smaller, faster)</option>
+            <option value="200" selected>200 DPI (recommended)</option>
+            <option value="300">300 DPI (best quality, slower)</option>
+          </select>
+        </div>
+        <div>
+          <label for="api_key">Mistral API key</label>
+          <input type="password" id="api_key" name="api_key" placeholder="sk-… (optional)">
+          <div class="hint">Optional if MISTRAL_API_KEY is set in the environment. Never stored.</div>
+        </div>
+      </div>
+
+      <button type="submit" id="submit">Convert</button>
+    </form>
+
+    <div id="error"></div>
+
+    <div id="progress">
+      <div id="status"></div>
+      <div class="bar"><div id="bar"></div></div>
+    </div>
+
+    <div id="result">
+      <div id="result-summary"></div>
+      <div class="links">
+        <a id="dl-epub" href="#">Download .epub (ebook, with images)</a>
+        <a id="dl-pdf" href="#">Download .pdf (print-ready, formulas rendered)</a>
+        <a id="dl-mobi" href="#" style="display:none">Download .mobi (Kindle)</a>
+        <a id="dl-md" href="#">Download .md + images (.zip)</a>
+        <a id="dl-txt" href="#">Download .txt</a>
+        <button class="secondary" id="again" type="button">Convert another</button>
+      </div>
+      <div id="mobi-note" class="hint" style="display:none"></div>
+      <div id="pdf-note" class="hint" style="display:none"></div>
+      <label for="preview">Preview (first 2000 characters)</label>
+      <textarea id="preview" readonly></textarea>
+    </div>
+  </div>
+</main>
+
+<script>
+const form = document.getElementById('form');
+const submitBtn = document.getElementById('submit');
+const progressBox = document.getElementById('progress');
+const statusEl = document.getElementById('status');
+const barEl = document.getElementById('bar');
+const resultBox = document.getElementById('result');
+const errorBox = document.getElementById('error');
+const previewEl = document.getElementById('preview');
+
+const STATUS_TEXT = {
+  queued: 'Waiting in queue…',
+  converting: 'Converting DJVU pages to images…',
+  ocr: 'Running OCR…',
+  pdf: 'Rendering PDF (formulas)…',
+  done: 'Done',
+};
+
+function showError(message) {
+  errorBox.textContent = message;
+  errorBox.style.display = 'block';
+}
+
+form.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  errorBox.style.display = 'none';
+  resultBox.style.display = 'none';
+  document.getElementById('mobi-note').style.display = 'none';
+  document.getElementById('pdf-note').style.display = 'none';
+  progressBox.style.display = 'block';
+  barEl.style.width = '0%';
+  statusEl.textContent = STATUS_TEXT.queued;
+  submitBtn.disabled = true;
+
+  try {
+    const response = await fetch('/upload', { method: 'POST', body: new FormData(form) });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Upload failed');
+    poll(data.job_id);
+  } catch (err) {
+    showError(err.message);
+    progressBox.style.display = 'none';
+    submitBtn.disabled = false;
+  }
+});
+
+function poll(jobId) {
+  const timer = setInterval(async () => {
+    try {
+      const response = await fetch(`/progress/${jobId}`);
+      const job = await response.json();
+      if (!response.ok) throw new Error(job.error || 'Job not found');
+
+      if (job.status === 'error') {
+        clearInterval(timer);
+        progressBox.style.display = 'none';
+        submitBtn.disabled = false;
+        showError(job.error || 'Conversion failed');
+        return;
+      }
+
+      if (job.status === 'ocr' && job.total > 0) {
+        statusEl.textContent = `Running OCR — page ${job.done} of ${job.total}…`;
+        barEl.style.width = `${Math.round((job.done / job.total) * 100)}%`;
+      } else {
+        statusEl.textContent = STATUS_TEXT[job.status] || job.status;
+      }
+
+      if (job.status === 'done') {
+        clearInterval(timer);
+        progressBox.style.display = 'none';
+        submitBtn.disabled = false;
+        document.getElementById('dl-epub').href = `/download/${jobId}/epub`;
+        document.getElementById('dl-md').href = `/download/${jobId}/md`;
+        document.getElementById('dl-txt').href = `/download/${jobId}/txt`;
+        const pdfLink = document.getElementById('dl-pdf');
+        const pdfNote = document.getElementById('pdf-note');
+        if (job.formats.includes('pdf')) {
+          pdfLink.href = `/download/${jobId}/pdf`;
+          pdfLink.style.display = '';
+          pdfNote.style.display = 'none';
+        } else {
+          pdfLink.style.display = 'none';
+          if (job.pdf_error) {
+            pdfNote.textContent = `PDF export unavailable: ${job.pdf_error}`;
+            pdfNote.style.display = 'block';
+          }
+        }
+        const mobiLink = document.getElementById('dl-mobi');
+        const mobiNote = document.getElementById('mobi-note');
+        if (job.formats.includes('mobi')) {
+          mobiLink.href = `/download/${jobId}/mobi`;
+          mobiLink.style.display = '';
+        } else {
+          mobiLink.style.display = 'none';
+          if (job.mobi_error) {
+            mobiNote.textContent = `MOBI conversion unavailable: ${job.mobi_error}`;
+            mobiNote.style.display = 'block';
+          }
+        }
+        const cachedNote = job.cached
+          ? `, ${job.cached} page${job.cached === 1 ? '' : 's'} served from cache`
+          : '';
+        document.getElementById('result-summary').textContent =
+          `Done — ${job.total} pages, ${job.images} image${job.images === 1 ? '' : 's'} extracted${cachedNote}.`;
+        previewEl.value = job.preview || '';
+        resultBox.style.display = 'block';
+      }
+    } catch (err) {
+      clearInterval(timer);
+      submitBtn.disabled = false;
+      showError(err.message);
+    }
+  }, 1000);
+}
+
+document.getElementById('again').addEventListener('click', () => {
+  form.reset();
+  resultBox.style.display = 'none';
+  progressBox.style.display = 'none';
+  errorBox.style.display = 'none';
+  document.getElementById('mobi-note').style.display = 'none';
+  document.getElementById('pdf-note').style.display = 'none';
+});
+</script>
+</body>
+</html>
